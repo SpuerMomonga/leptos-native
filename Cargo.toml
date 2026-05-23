@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/signals",
+    "crates/ipc",
+    "crates/bridge",
+    "crates/store",
+    "crates/runtime",
+    "crates/native",
+    "crates/cli",
+    "examples/counter",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
