@@ -53,23 +53,19 @@ fn Tools() -> impl IntoView {
 fn main() {
     Application::default()
         .setup(|app| {
-            let main_window = WindowBuilder::new()
-                .id("main")
+            let main_window = WindowBuilder::new("main", Counter)
                 .title("leptos-native")
                 .inner_size(960, 640)
                 .resizable(true)
-                .mount(Counter)
                 .build();
-            app.set_window(main_window);
+            app.open_window(main_window);
 
-            let tools_window = Window::builder()
-                .id("tools")
+            let tools_window = Window::builder("tools", Tools)
                 .title("Tools")
                 .inner_size(360, 520)
                 .resizable(false)
-                .mount(Tools)
                 .build();
-            app.set_window(tools_window);
+            app.open_window(tools_window);
         })
         .run();
 }

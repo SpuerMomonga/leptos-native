@@ -1,118 +1,98 @@
 # Tech Stack
 
-This document is organized by technology first, then by the APIs each technology contributes.
+Organized by technology first, then by which crate each technology lands in.
 
-## Wry
+## Tao (windowing + event loop)
 
-Wry is the WebView layer.
+Used by both backends and by `leptos-native`.
 
-Use these parts:
+- `EventLoop`, `EventLoopBuilder`, `EventLoopProxy`, `ControlFlow`.
+- `WindowBuilder`, `Window`, `WindowEvent`.
 
-- `WebViewBuilder` to create and configure a WebView.
-- `WebView` as the runtime object for the embedded web content.
-- `with_url` or `with_html` to choose the initial renderer source.
-- `with_ipc_handler` to receive structured messages from the renderer.
-- `with_initialization_script` to inject startup scripts.
-- `with_new_window_req_handler` to control renderer-initiated window requests.
-- `build(&window)` to attach the WebView to a native window.
+Lives in: `crates/leptos-native` (loop ownership), `crates/webview-dom` and `crates/blitz-dom` (window-handle integration).
 
-Used for:
+## Wry (WebView backend)
 
-- application UI rendering
-- renderer-to-Rust messaging
-- window-scoped web content startup
+- `WebViewBuilder`, `WebView`.
+- `with_html`, `with_initialization_script`, `with_ipc_handler`, `with_asynchronous_custom_protocol`.
+- `evaluate_script`.
+- `build(&window)`.
 
-## Tao
+Lives in: `crates/webview-dom`.
 
-Tao is the native windowing and event-loop layer.
+## Blitz (Blitz backend)
 
-Use these parts:
+- `blitz_dom::Document`, `NodeId`.
+- Element/text/attribute mutation methods on `Document`.
+- `blitz_html::HtmlDocument` for shell bootstrap.
+- A Blitz renderer crate (e.g., `blitz_renderer_vello`) for paint.
+- `blitz_traits::Viewport` and event types.
 
-- `EventLoop` and `EventLoopBuilder` to own the desktop event loop.
-- `EventLoopProxy` to dispatch custom events into the loop.
-- `ControlFlow` to manage loop behavior.
-- `WindowBuilder` to create windows.
-- `Window` to represent the native host window.
-- `WindowEvent` to react to window lifecycle and input events.
+Lives in: `crates/blitz-dom`.
 
-Used for:
+## wgpu + Vello (Blitz backend)
 
-- creating application windows
-- managing window lifecycle
-- routing native events
-- integrating app-level commands with the event loop
+- `wgpu::Instance`, `Surface`, `Device`, `Queue`.
+- `vello::Renderer`, `vello::Scene` (driven by Blitz's renderer crate).
+- `raw_window_handle` traits.
 
-## tray-icon
+Lives in: `crates/blitz-dom`.
 
-`tray-icon` is the system tray and tray menu layer.
+## tray-icon (system tray)
 
-Use these parts:
+- `TrayIconBuilder`, `TrayIcon`, `TrayIconEvent`.
+- `menu::Menu`, `menu::MenuItem`, `menu::IconMenuItem`, `menu::PredefinedMenuItem`, `menu::MenuEvent`.
 
-- `TrayIconBuilder` to create a tray icon.
-- `TrayIcon` to own the tray instance.
-- `TrayIconEvent` to observe tray interactions.
-- `menu::Menu` to define tray menus.
-- `menu::MenuItem` and `menu::IconMenuItem` for actionable menu entries.
-- `menu::PredefinedMenuItem` for standard commands.
-- `menu::MenuEvent` for menu selection handling.
+Lives in: `crates/leptos-native`.
 
-Used for:
+## Leptos Reactive Primitives (upstream, reused)
 
-- system tray integration
-- tray menus and menu actions
-- app commands surfaced outside the window
+`reactive_graph` is DOM-agnostic and pulled in directly:
 
-## Leptos
+- `reactive_graph::signal::*` (`signal`, `RwSignal`, `ReadSignal`, `WriteSignal`).
+- `reactive_graph::computed::Memo`.
+- `reactive_graph::effect::Effect`, `RenderEffect`.
+- `reactive_graph::owner::Owner`.
+- `reactive_graph::traits::*` (`Get`, `Set`, `Update`, `With`, `Track`).
 
-Leptos is the reactive UI layer.
+`any_spawner::Executor::init_custom` plugs the Tao-aware executor.
 
-Use these parts:
+Optional: `reactive_stores` for store-based state.
 
-- `component` for component definitions.
-- `view` for JSX-like view construction.
-- `signal` and `RwSignal` for reactive state.
-- `Memo` for derived values.
-- `Effect` for side effects.
-- `batch` for grouped reactive updates.
-- `IntoView` for component return types.
+Lives in: `crates/render` (depends on `reactive_graph`), `crates/leptos-native` (initializes `any_spawner`).
 
-Used for:
+The framework does **not** depend on upstream `tachys`, `leptos_dom`, or `leptos_macro`. Those hardcode the DOM renderer in 0.7+; `crates/render` and `crates/view-macro` replace them.
 
-- mounted UI composition
-- local and shared reactive state
-- derived UI state
-- effect-driven integration with application state
+## Tokio (async runtime)
 
-## Tokio
+- `runtime::Builder::new_multi_thread`, `Runtime`.
+- `tokio::spawn`, `spawn_blocking`.
+- `LocalSet` for non-`Send` task coordination on the main thread.
 
-Tokio is the async runtime layer.
+Lives in: `crates/leptos-native`.
 
-Use these parts:
+## serde + serde_json (IPC)
 
-- `runtime::Builder` to configure the runtime.
-- `Runtime` to own runtime execution.
-- `tokio::spawn` for async tasks.
-- `spawn_blocking` for blocking work.
-- `LocalSet` for non-`Send` task coordination when needed.
+Used by the WebView backend.
 
-Used for:
+Lives in: `crates/ipc`, `crates/webview-dom`.
 
-- background work
-- async services
-- task orchestration around the application loop
+## Crate-to-Tech Map
 
-## How The Stack Maps To The Framework
-
-- `crates/native` should wrap Tao, Wry, and tray-icon behind `Application`, `App`, and `WindowBuilder`.
-- `crates/signals` should wrap Leptos reactive primitives.
-- `crates/ipc` should define structured renderer communication.
-- `crates/bridge` should connect Rust state to renderer state.
-- `crates/runtime` should own Tokio integration if it stays separate from `native`.
-- `crates/core` should stay backend-agnostic and hold shared contracts only.
+| Crate | Wraps |
+|---|---|
+| `crates/render` | `reactive_graph` (only) |
+| `crates/view-macro` | `proc-macro2`, `syn`, `quote` |
+| `crates/ipc` | `serde`, `serde_json` |
+| `crates/webview-dom` | `wry`, `tao`, `serde`, `serde_json`; depends on `ipc` and `render` |
+| `crates/blitz-dom` | `blitz-dom` (upstream), `vello`, `wgpu`, `tao`; depends on `render` |
+| `crates/leptos-native` | `tao`, `tokio`, `any_spawner`, `tray-icon`; depends on one of `webview-dom` / `blitz-dom` via features |
+| `crates/cli` | `clap`, build-time helpers |
 
 ## Design Constraints
 
-- Keep windowing and tray APIs explicit instead of hiding them behind vague host names.
-- Keep backend-specific details in `native` internals until reuse justifies extraction.
-- Prefer typed Rust APIs over stringly typed control channels.
-- Keep the stack narrow until a real boundary appears.
+- Keep windowing, tray, and backend names explicit in module paths.
+- Two backends, exactly one selected per binary at compile time.
+- Reactive scheduling runs on the Tao main thread; never block it.
+- Reuse upstream Leptos crates wherever they work without wrapping (`reactive_graph`, `any_spawner`).
+- Reimplement only what upstream Leptos forces (the renderer-generic view layer).

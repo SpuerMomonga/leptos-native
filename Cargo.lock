@@ -3,47 +3,5 @@
 version = 4
 
 [[package]]
-name = "bridge"
-version = "0.1.0"
-dependencies = [
- "ipc",
-]
-
-[[package]]
-name = "cli"
-version = "0.1.0"
-
-[[package]]
-name = "core"
-version = "0.1.0"
-
-[[package]]
 name = "counter"
-version = "0.1.0"
-dependencies = [
- "native",
-]
-
-[[package]]
-name = "ipc"
-version = "0.1.0"
-
-[[package]]
-name = "native"
-version = "0.1.0"
-dependencies = [
- "core",
- "runtime",
-]
-
-[[package]]
-name = "runtime"
-version = "0.1.0"
-
-[[package]]
-name = "signals"
-version = "0.1.0"
-
-[[package]]
-name = "store"
 version = "0.1.0"
