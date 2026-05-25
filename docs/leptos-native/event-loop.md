@@ -24,8 +24,6 @@ pub enum UserEvent {
     Dispatch(Box<dyn FnOnce(&App) + Send>),
     Tray(tray_icon::TrayIconEvent),
     Menu(tray_icon::menu::MenuEvent),
-    WindowOpen(Window),
-    WindowOpenFailed(WindowId, WindowError),
     WindowClose(WindowId),
     Shutdown,
 

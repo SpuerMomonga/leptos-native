@@ -27,6 +27,14 @@ pub trait Renderer: Sized + 'static {
     type Placeholder: AsRef<Self::Node> + Clone + 'static;
     type Event: 'static;
 
+    /// Per-window backend handle. Cloning is cheap (typically `Rc<...>`).
+    /// Every `Renderer` method reads the active handle from a backend-owned
+    /// thread_local; see "Multi-Window Backend Routing" below.
+    type Handle: Clone + 'static;
+
+    fn current_handle() -> Option<Self::Handle>;
+    fn enter_scope<R>(handle: &Self::Handle, f: impl FnOnce() -> R) -> R;
+
     fn create_element(tag: &str) -> Self::Element;
     fn create_text(text: &str) -> Self::Text;
     fn create_placeholder() -> Self::Placeholder;
@@ -53,33 +61,48 @@ The trait is HTML-flavored. Both DOM crates accept HTML element tag names (`div`
 
 ### Multi-Window Backend Routing
 
-The `Renderer` methods are static; they need to know *which window's backend* to mutate. The framework solves this with a per-tick scoped thread-local:
+`Renderer` methods are associated functions; they need to know *which window's backend* to mutate. The trait carries this through `Handle` plus `current_handle` / `enter_scope`. The render crate never names a concrete handle type — each backend defines its own `Handle` (typically `Rc<WebViewBackend>` / `Rc<BlitzBackend>`) and owns the thread_local that stores the active value.
+
+A typical backend implementation looks like this:
 
 ```rust
-// In each DOM crate.
 thread_local! {
-    static BACKEND: RefCell<Option<BackendRef>> = RefCell::new(None);
+    static ACTIVE: RefCell<Option<Rc<MyBackend>>> = RefCell::new(None);
 }
 
-pub fn with_backend<R>(backend: &BackendRef, f: impl FnOnce() -> R) -> R {
-    BACKEND.with(|slot| {
-        let prev = slot.borrow_mut().replace(backend.clone());
-        let result = f();
-        *slot.borrow_mut() = prev;   // restore, never just clear
-        result
-    })
+impl Renderer for MyRenderer {
+    type Handle = Rc<MyBackend>;
+
+    fn current_handle() -> Option<Self::Handle> {
+        ACTIVE.with(|slot| slot.borrow().clone())
+    }
+
+    fn enter_scope<R>(handle: &Self::Handle, f: impl FnOnce() -> R) -> R {
+        ACTIVE.with(|slot| {
+            let prev = slot.borrow_mut().replace(handle.clone());
+            let result = f();
+            *slot.borrow_mut() = prev;     // restore, never just clear
+            result
+        })
+    }
+
+    fn create_element(tag: &str) -> Self::Element {
+        let backend = Self::current_handle()
+            .expect("renderer scope must be installed");
+        backend.create_element(tag)
+    }
+
+    // ...remaining methods follow the same `current_handle` pattern.
 }
 ```
 
-**Routing rule:** every entry point that calls `Renderer` methods sets `BACKEND` to the right window first, runs the work, then restores the previous value. The entry points are:
+**Routing rule.** Every entry point that calls `Renderer` methods must install the right window's handle first:
 
-1. **Initial mount** — `Window::open` flow calls `with_backend(&window.backend, || mount_to(root, view))`.
-2. **Reactive re-runs** — the reactive bridge captures the active backend at `build()` time and re-installs it on every `rebuild()`. See "The Reactive Bridge" below.
-3. **Event dispatch** — when an event arrives for a window, `dispatch_event` runs handlers under `with_backend(&that_window.backend, ...)`. User handlers usually update signals; if those signal updates trigger effects whose subscribers belong to a *different* window, point 2 takes over.
+1. **Initial mount** — `WindowBuilder::build` calls `R::enter_scope(&handle, || mount_to(root, view))`.
+2. **Reactive re-runs** — the reactive bridge captures `R::current_handle()` at `build()` time and re-installs it on every `rebuild()`. See "The Reactive Bridge" below.
+3. **Event dispatch** — when an event arrives for a window, the framework runs handlers under `R::enter_scope(&that_window.handle, ...)`. User handlers typically update signals; if those updates trigger effects whose subscribers belong to a *different* window, point 2 takes over.
 
-The save+restore (rather than save+clear) matters: an effect for Window A may, while running, set a signal that triggers an effect for Window B; B's effect re-installs B's backend; on its return, we want A back, not nothing.
-
-This is the same shape pachys uses, just made explicit. The previous draft of this doc described the thread-local but did not specify cross-window correctness — that was a bug.
+Save+restore (rather than save+clear) matters: an effect for window A may, while running, set a signal that triggers an effect for window B; B's effect installs B's handle and restores A on return. This is the same shape pachys uses, lifted onto a typed seam so render and the backend crates agree on the contract.
 
 `ListenerHandle` is a small RAII struct returned by `add_event_listener`; dropping it removes the listener. The view layer holds the handle inside the mountable state.
 
@@ -163,9 +186,10 @@ where
     type State = RenderEffectState<V::State, R>;
 
     fn build(mut self) -> Self::State {
-        let backend = current_backend::<R>();          // captured at build time
+        let handle = R::current_handle()
+            .expect("reactive bridge built outside renderer scope");
         RenderEffect::new(move |prev| {
-            with_backend(&backend, || {
+            R::enter_scope(&handle, || {
                 let value = self();
                 match prev {
                     Some(mut state) => { value.rebuild(&mut state); state }
@@ -178,7 +202,7 @@ where
 }
 ```
 
-This is the load-bearing piece. When the closure reads a signal, the effect subscribes; on signal change, the effect re-runs and `rebuild` updates only the renderer state that changed. The captured `backend` makes sure the right window's renderer state is mutated, even if the effect fires from a signal owned elsewhere.
+This is the load-bearing piece. When the closure reads a signal, the effect subscribes; on signal change, the effect re-runs and `rebuild` updates only the renderer state that changed. The captured `Handle` makes sure the right window's renderer state is mutated, even if the effect fires from a signal owned elsewhere.
 
 `RenderEffect` from `reactive_graph::effect` runs synchronously on its first call, so a freshly mounted view renders immediately without waiting for the executor.
 
@@ -207,7 +231,7 @@ where
 
 `MountedView` owns the root state and the `Owner` for the subtree. Dropping it unmounts.
 
-User code does not call `mount_to` directly; `crates/leptos-native::WindowBuilder` calls it from inside its window setup, wrapped in `with_backend`.
+User code does not call `mount_to` directly; `crates/leptos-native::WindowBuilder` calls it from inside its window setup, wrapped in `R::enter_scope(&handle, ...)`.
 
 ## Compile-Time Budget
 

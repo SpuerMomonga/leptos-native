@@ -26,6 +26,7 @@ Each crate has its own folder under `docs/`. Open the folder's `README.md` for t
 ## Cross-Cutting
 
 - [rendering.md](rendering.md) — backend selection and comparison.
+- [errors.md](errors.md) — unified error model (anyhow-based).
 - [examples.md](examples.md) — example conventions.
 
 ## Reading Order

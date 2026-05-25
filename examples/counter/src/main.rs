@@ -35,19 +35,19 @@
 // fn main() {
 //     Application::default()
 //         .setup(|app| {
-//             let main_window = WindowBuilder::new("main", Counter)
+//             WindowBuilder::new(app, "main", Counter)
 //                 .title("leptos-native")
 //                 .inner_size(960, 640)
 //                 .resizable(true)
-//                 .build();
-//             app.open_window(main_window);
-
-//             let tools_window = Window::builder("tools", Tools)
+//                 .build()
+//                 .expect("main window");
+//
+//             Window::builder(app, "tools", Tools)
 //                 .title("Tools")
 //                 .inner_size(360, 520)
 //                 .resizable(false)
-//                 .build();
-//             app.open_window(tools_window);
+//                 .build()
+//                 .expect("tools window");
 //         })
 //         .run();
 // }

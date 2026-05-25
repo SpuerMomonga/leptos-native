@@ -91,8 +91,8 @@ pub struct Accelerator { /* ... */ }
 pub struct Icon { /* ... */ }
 
 impl Icon {
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, IconError>;
-    pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, IconError>;
+    pub fn from_path(path: impl AsRef<Path>) -> leptos_native::Result<Self>;
+    pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> leptos_native::Result<Self>;
 }
 ```
 

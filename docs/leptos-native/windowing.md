@@ -27,19 +27,19 @@ Two identifiers:
 
 ## `WindowBuilder`
 
-Full surface in [README.md](README.md). Recap:
+A `WindowBuilder` is bound to an `App` handle and finalized by a fallible `build`. This mirrors `tauri::WebviewWindowBuilder`: configure fluently, then call `build` to synchronously create the Tao window, attach the active backend, mount the component, and register the window with the runtime.
 
 ```rust
-let window = WindowBuilder::new("main", Counter)
+let window = WindowBuilder::new(app, "main", Counter)
     .title("counter")
     .inner_size(640, 480)
     .resizable(true)
-    .build();
+    .build()?;
 ```
 
-`Window::builder("id", Component)` is a shorthand alias for `WindowBuilder::new("id", Component)`. Both forms appear in user code.
+`Window::builder(app, "id", Component)` is a shorthand alias for `WindowBuilder::new(app, "id", Component)`. Both forms appear in user code.
 
-`WindowBuilder::build` returns a configured-but-not-opened `Window`. Hand it to `App::open_window(window)` to register it with the runtime — that is what triggers the Tao + backend bring-up.
+`build` returns `leptos_native::Result<Window>`. On `Ok`, the window is already live, registered in `App`, and visible (unless `.visible(false)` was set). On `Err`, nothing was registered and no native resources remain. There is no separate "configured-but-not-opened" state and no asynchronous open step. The unified error model is documented in [errors.md](../errors.md).
 
 ## HTML Shell
 
@@ -52,15 +52,18 @@ A user can supply a custom shell to inject fonts, theme variables, or a layout g
 
 ## Lifecycle
 
-1. `WindowBuilder::build` returns a `Window` — configured but not yet opened. The Tao window does not exist yet; no GPU surface is allocated; no backend is attached.
-2. `App::open_window(window)` registers the `Window` with the runtime. The runtime stores the handle in its registry keyed by `WindowId`, then schedules bring-up on the next tick:
+1. `WindowBuilder::build` runs synchronously on the calling thread and:
    - Builds the Tao `Window` from `WindowConfig`.
    - Constructs the backend instance via `WebViewBackend::attach` or `BlitzBackend::attach`.
    - Creates the window's root `Owner`.
    - Runs the user's component function inside that owner.
    - Mounts the resulting view subtree against the backend's `renderer_root`.
-3. While running, the window forwards Tao events to its backend, dispatches DOM-style events to listeners, and runs reactive effects.
-4. `window.close()` (or `App::close_window(&id)`, or the user clicking the OS close control) posts `UserEvent::WindowClose(id)` to the Tao loop. The loop:
+   - Registers the `Window` with the runtime keyed by `WindowId`.
+   - Returns the live `Window`.
+
+   Any failure in these steps returns `Err(leptos_native::Error)` and leaves nothing registered.
+2. While running, the window forwards Tao events to its backend, dispatches DOM-style events to listeners, and runs reactive effects.
+3. `window.close()` (or `App::close_window(&id)`, or the user clicking the OS close control) posts `UserEvent::WindowClose(id)` to the Tao loop. The loop:
    - Runs the optional `on_close` handler. If it returns `CloseAction::Cancel`, the close is vetoed and nothing else happens.
    - Drops the mounted view (effects cancel, listeners detach).
    - Detaches the backend (`WebViewBackend::detach` or `BlitzBackend::detach`).
@@ -70,20 +73,6 @@ A user can supply a custom shell to inject fonts, theme variables, or a layout g
 Closing the last window does not implicitly exit the application unless configured to. Tray-only apps keep the loop alive without windows. Default exit policy: "exit when the last window closes."
 
 Existing `Window` clones held outside the registry stay valid in shape (the `Arc` is still alive), but operations on them become no-ops once the registry has dropped its entry. `window.is_closed()` reports the current state.
-
-### Operations on a not-yet-opened `Window`
-
-A `Window` returned by `WindowBuilder::build` but not yet handed to `App::open_window` is in the *configured* state. The runtime has not seen it; no Tao window exists.
-
-- **Mutators** (`set_title`, `set_inner_size`, `set_position`, `show`, `hide`, `focus`, `minimize`, `maximize`) are queued and replayed when `open_window` runs the bring-up. This lets setup code touch the same `Window` value before and after registration without branching.
-- **`close`** on a not-yet-opened window cancels the queued bring-up; calling `open_window` afterward is a no-op.
-- **Synchronous getters** cannot replay. Their behavior is fixed:
-  - `is_visible` returns the configured `visible` flag from the builder (default `true`).
-  - `is_focused` returns `false`.
-  - `is_closed` returns `false` until `close` is called or the runtime tears the window down.
-  - `inner_size` returns the configured `inner_size` from the builder.
-
-These rules are deterministic — no panics, no surprises. Setup code can read geometry it just configured, and tray/menu handlers that touch a window during startup do not need to check "is this open yet".
 
 ## Programmatic Window Operations
 
@@ -114,14 +103,13 @@ These dispatch through the Tao event loop, so they are safe from any thread that
 
 ```rust
 impl App {
-    pub fn open_window(&self, window: Window);
     pub fn close_window(&self, id: &WindowId);
     pub fn get_window(&self, id: &WindowId) -> Option<Window>;
     pub fn get_windows(&self) -> Vec<Window>;
 }
 ```
 
-Closing through `App::close_window(&id)` and `window.close()` end at the same code path; pick whichever the call site already has in scope.
+Window creation does not go through `App` — `WindowBuilder::build` registers the window directly. Closing through `App::close_window(&id)` and `window.close()` end at the same code path; pick whichever the call site already has in scope.
 
 Components receive their enclosing `Window` via context:
 
@@ -150,39 +138,46 @@ The user does not see this difference. Both arrive as a `Window` with the same A
 
 ## Errors
 
-`WindowError` lists failure modes:
+`WindowBuilder::build` returns `leptos_native::Result<Window>` (`leptos_native::Error` is an alias for `anyhow::Error`; the unified error model lives in [errors.md](../errors.md)). All failure modes surface synchronously through this single call, matching `tauri::WebviewWindowBuilder::build`. Common causes — each carrying a chained context message and, where useful, a downcastable sentinel from `leptos_native::error::kind`:
 
-- `BackendInit(String)` — Wry or Blitz failed to attach to the Tao window. Reachable only after `App::open_window` (the actual attach happens on the next event-loop tick), so this never returns from `WindowBuilder::build`.
-- `MissingComponent` — builder built without a component (only reachable through `try_build` on a manually mutated builder).
-- `InvalidGeometry` — min > max, etc. Caught at `build`/`try_build` time.
-- `Os(String)` — underlying OS error from Tao when creating the native window.
+- Backend attach failure — Wry or Blitz failed to attach to the Tao window. Downcasts to `kind::WebViewMissing` or `kind::GpuAdapterMissing` when the cause is identifiable.
+- `kind::InvalidGeometry` — min > max, negative size, etc. Caught at `build` time.
+- `kind::DuplicateWindow(WindowId)` — a window with this logical id is already registered.
+- OS errors from Tao when creating the native window — propagated as anonymous causes inside the chain.
+- Missing component — surfaced as a panic, not a `Result`. Building a `WindowBuilder` without a component is a programmer error (see the panic policy in [errors.md](../errors.md)).
 
-`build` panics on `MissingComponent` or `InvalidGeometry`. `try_build` returns the same as `Result`.
-
-### Async errors from `open_window`
-
-`App::open_window` does not return a `Result` because backend bring-up runs on the event loop, not synchronously on the caller's thread. Failures surface as `AppEvent::WindowOpenFailed(WindowId, WindowError)` through `Application::run_with`:
+Apps handle window-creation errors at the call site, the same way they would handle any other fallible setup step:
 
 ```rust
+use leptos_native::error::kind;
+
 Application::default()
     .setup(|app| {
-        let main = WindowBuilder::new("main", App).build();
-        app.open_window(main);
-    })
-    .run_with(|app, event| match event {
-        AppEvent::WindowOpenFailed(id, err) => {
-            tracing::error!(?id, ?err, "window failed to open");
-            // surface in UI, retry, or quit
+        let main = WindowBuilder::new(app, "main", Counter)
+            .title("leptos-native")
+            .inner_size(960, 640)
+            .build();
+
+        match main {
+            Ok(_) => {}
+            Err(err) if err.is::<kind::WebViewMissing>() => {
+                show_install_webview_dialog();
+                app.quit();
+            }
+            Err(err) => {
+                tracing::error!(?err, "main window failed to open");
+                app.quit();
+            }
         }
-        _ => {}
-    });
+    })
+    .run();
 ```
 
-`run` (the simpler entry) logs `WindowOpenFailed` at error level and otherwise ignores it. Apps that need to react use `run_with`.
+There is no asynchronous error channel for window construction. A window either exists when `build` returns `Ok`, or the call returned `Err` and nothing was registered.
 
 ## Why Window-Is-Handle
 
-Splitting `Window` into a configured-state value and a separate `WindowHandle` runtime type means users hold two different things to mean "this window". It also makes the `App::open_window(window)` boundary unclear: do you pass the configured value or the runtime handle? Collapsing both into one `Clone + Send` `Window` removes the distinction. Before `open_window` it represents intent; after, it represents the live window. The same methods work on both sides — pre-open mutators can either fail or be queued for replay; the spec is "queue and replay" so calls on a not-yet-open window apply as soon as it opens.
+Splitting `Window` into a configured-state value and a separate `WindowHandle` runtime type means users hold two different things to mean "this window". Collapsing both into one `Clone + Send` `Window` removes the distinction. The same methods work on every clone — pass a `Window` into a background task, store it in a component, or hand it back through `App::get_window`; they are all the same handle. Because `WindowBuilder::build` produces a live window directly, there is no pre-open phase to model separately.
 
 ## Why Not Multi-Process Per Window
 

@@ -46,12 +46,12 @@ fn App() -> impl IntoView {
 fn main() {
     Application::default()
         .setup(|app| {
-            let main_window = WindowBuilder::new("main", App)
+            WindowBuilder::new(app, "main", App)
                 .title("counter")
                 .inner_size(480, 320)
                 .resizable(true)
-                .build();
-            app.open_window(main_window);
+                .build()
+                .expect("main window");
         })
         .run();
 }

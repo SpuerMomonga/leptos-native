@@ -64,18 +64,36 @@ crates/blitz-dom/
 ```rust
 pub struct BlitzDomRenderer;
 
+thread_local! {
+    static ACTIVE: RefCell<Option<Rc<BlitzBackend>>> = RefCell::new(None);
+}
+
 impl render::Renderer for BlitzDomRenderer {
     type Node = BlitzNode;
     type Element = BlitzElement;
     type Text = BlitzText;
     type Placeholder = BlitzPlaceholder;
     type Event = BlitzEvent;
+    type Handle = Rc<BlitzBackend>;
+
+    fn current_handle() -> Option<Self::Handle> {
+        ACTIVE.with(|slot| slot.borrow().clone())
+    }
+
+    fn enter_scope<R>(handle: &Self::Handle, f: impl FnOnce() -> R) -> R {
+        ACTIVE.with(|slot| {
+            let prev = slot.borrow_mut().replace(handle.clone());
+            let result = f();
+            *slot.borrow_mut() = prev;
+            result
+        })
+    }
 
     fn create_element(tag: &str) -> Self::Element {
-        BACKEND.with(|b| {
-            let id = b.document_mut().create_element(tag);
-            BlitzElement { id }
-        })
+        let backend = Self::current_handle()
+            .expect("renderer called outside enter_scope");
+        let id = backend.document_mut().create_element(tag);
+        BlitzElement { id }
     }
 
     // ...similar for create_text, create_placeholder, set_text, set_attribute,
@@ -83,7 +101,7 @@ impl render::Renderer for BlitzDomRenderer {
 }
 ```
 
-`BACKEND` is a thread-local pointing at the active window's `BlitzBackend`, set when a paint or mutation cycle begins. Same pattern as `webview-dom` and as pachys.
+`ACTIVE` is the crate-private thread-local that backs `Renderer::current_handle` for the Blitz backend. The `Handle` type is `Rc<BlitzBackend>`; `enter_scope` save+restores the previous value so cross-window effect cascades nest correctly. See [`crates/render`](../render/README.md) for the routing rule.
 
 `BlitzNode`, `BlitzElement`, `BlitzText`, `BlitzPlaceholder` are thin newtypes around `blitz_dom::NodeId`.
 
@@ -114,7 +132,7 @@ The `wgpu::Instance`/`Adapter` are shared across windows; each window has its ow
 fn create_surface(
     window: &tao::window::Window,
     instance: &wgpu::Instance,
-) -> Result<wgpu::Surface, BackendError> {
+) -> leptos_native::Result<wgpu::Surface> {
     let target = wgpu::SurfaceTarget::Window(Box::new(window.clone()));
     instance.create_surface(target)
 }
@@ -126,7 +144,7 @@ Tao windows expose `RawWindowHandle` and `RawDisplayHandle` which is what wgpu n
 
 When a reactive effect re-runs and calls `BlitzDomRenderer::set_attribute`:
 
-1. Look up the active window's document via `BACKEND`.
+1. Look up the active window's document via `Renderer::current_handle`.
 2. Call `document.set_attribute(node_id, name, value)`.
 3. Mark `dirty = true` on the window.
 
@@ -175,7 +193,7 @@ impl BlitzBackend {
         window: Arc<tao::window::Window>,
         config: BlitzConfig,
         proxy: tao::event_loop::EventLoopProxy<UserEvent>,
-    ) -> Result<Self, BackendError>;
+    ) -> leptos_native::Result<Self>;
 
     pub fn renderer_root(&self) -> BlitzElement;          // The document's <body> or root mount.
     pub fn handle_window_event(&self, event: &WindowEvent);

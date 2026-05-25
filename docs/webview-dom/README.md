@@ -53,18 +53,38 @@ crates/webview-dom/
 ```rust
 pub struct WebViewRenderer;
 
+thread_local! {
+    static ACTIVE: RefCell<Option<Rc<WebViewBackend>>> = RefCell::new(None);
+}
+
 impl render::Renderer for WebViewRenderer {
     type Node = WebViewNode;
     type Element = WebViewElement;
     type Text = WebViewText;
     type Placeholder = WebViewPlaceholder;
     type Event = ipc::IpcEvent;
+    type Handle = Rc<WebViewBackend>;
+
+    fn current_handle() -> Option<Self::Handle> {
+        ACTIVE.with(|slot| slot.borrow().clone())
+    }
+
+    fn enter_scope<R>(handle: &Self::Handle, f: impl FnOnce() -> R) -> R {
+        ACTIVE.with(|slot| {
+            let prev = slot.borrow_mut().replace(handle.clone());
+            let result = f();
+            *slot.borrow_mut() = prev;
+            result
+        })
+    }
 
     fn create_element(tag: &str) -> Self::Element {
-        let id = WebViewElementId::next();
-        BACKEND.with(|b| b.queue_mut().push(ipc::Mutation::CreateElement {
+        let backend = Self::current_handle()
+            .expect("renderer called outside enter_scope");
+        let id = backend.next_id();
+        backend.queue_mut().push(ipc::Mutation::CreateElement {
             id, tag: tag.into()
-        }));
+        });
         WebViewElement { id }
     }
 
@@ -73,7 +93,7 @@ impl render::Renderer for WebViewRenderer {
 }
 ```
 
-`BACKEND` is a thread-local pointing at the active window's `WebViewBackend`. It is set when a paint or mutation cycle begins for that window. This pattern matches pachys per-platform `Dom` thread-locals and keeps every renderer call argument-light.
+`ACTIVE` is the crate-private thread-local that backs `Renderer::current_handle` for the WebView backend. The `Handle` type is `Rc<WebViewBackend>`; `enter_scope` save+restores the previous value so cross-window effect cascades nest correctly. See [`crates/render`](../render/README.md) for the routing rule.
 
 `WebViewNode`, `WebViewElement`, `WebViewText`, `WebViewPlaceholder` are thin newtypes around `WebViewElementId`. Zero runtime cost.
 
@@ -162,7 +182,7 @@ impl WebViewBackend {
         window: Arc<tao::window::Window>,
         config: WebViewConfig,
         proxy: tao::event_loop::EventLoopProxy<UserEvent>,
-    ) -> Result<Self, BackendError>;
+    ) -> leptos_native::Result<Self>;
 
     pub fn renderer_root(&self) -> WebViewElement;     // The window's <div id="root">
     pub fn flush_mutations(&self);                     // Called after each tick.

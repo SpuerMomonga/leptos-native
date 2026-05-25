@@ -54,6 +54,8 @@ When the `default-features = false` form is used to switch off `webview`, the `b
 pub mod prelude {
     pub use crate::{Application, App, Window, WindowBuilder, Tray, TrayBuilder, MenuItem, TrayMenu};
     pub use crate::backend::Renderer;            // The active backend's Renderer impl.
+    pub use crate::{Error, Result};              // anyhow::Error alias and Result; see ../errors.md
+    pub use anyhow::{Context, bail, ensure};
     pub use leptos_native_render::{Render, Mountable, IntoView, ListenerHandle};
     pub use leptos_native_view_macro::{view, component};
     pub use reactive_graph::signal::*;
@@ -80,27 +82,13 @@ impl Application {
     pub fn id(self, identifier: impl Into<String>) -> Self;
 
     pub fn setup<F>(self, setup: F) -> Self where F: FnOnce(&App) + 'static;
+    pub fn on_exit<F>(self, handler: F) -> Self where F: FnOnce(&App) + 'static;
 
     pub fn run(self);
-    pub fn run_with(self, on_event: impl FnMut(&App, AppEvent) + 'static);
-}
-
-/// Application-level events surfaced to `run_with`.
-pub enum AppEvent {
-    /// The Tao loop has started; setup is complete and windows are open.
-    Started,
-    /// A window finished bring-up successfully.
-    WindowOpened(WindowId),
-    /// A window's bring-up failed (GPU adapter missing, system WebView not installed,
-    /// HTML shell rejected by Blitz, etc). Surfaces backend errors that cannot be
-    /// returned synchronously from `App::open_window`.
-    WindowOpenFailed(WindowId, WindowError),
-    /// A window finished tearing down. Fires after `on_close` and registry removal.
-    WindowClosed(WindowId),
-    /// The loop is about to exit. Last chance for synchronous cleanup before drop.
-    WillExit,
 }
 ```
+
+`on_exit` runs on the main thread after the Tao loop has been told to exit but before owners drop and backends detach. It is the last chance for synchronous cleanup (flushing logs, persisting state, releasing tray handles). Per-window teardown stays on `WindowBuilder::on_close`; `on_exit` is for application-wide cleanup that does not belong to any one window.
 
 `Application::default()` produces a working app with sensible defaults: a Tao loop, a multi-thread Tokio runtime, the Tao-aware executor.
 
@@ -121,7 +109,6 @@ pub struct App { /* ... */ }
 
 impl App {
     // Window registry
-    pub fn open_window(&self, window: Window);
     pub fn close_window(&self, id: &WindowId);
     pub fn get_window(&self, id: &WindowId) -> Option<Window>;
     pub fn get_windows(&self) -> Vec<Window>;
@@ -143,9 +130,9 @@ impl App {
 }
 ```
 
-`App` only manages the *registry* — opening, closing, and looking up windows. Per-window operations (`focus`, `show`, `hide`, `set_title`, `close`, geometry queries) live on `Window` itself; see [windowing.md](windowing.md) for the full surface.
+`App` only manages the *registry* — closing and looking up windows. Per-window operations (`focus`, `show`, `hide`, `set_title`, `close`, geometry queries) live on `Window` itself; see [windowing.md](windowing.md) for the full surface.
 
-`open_window` takes a built `Window`, not a `WindowBuilder`. Constructing the builder and finalizing with `.build()` happens on the caller's side; `open_window` is the boundary that hands the configured window to the runtime.
+Window creation goes through `WindowBuilder::new(app, id, component).build()`, which registers the window with the runtime synchronously and returns a live `Window` (or `leptos_native::Error`; see [../errors.md](../errors.md)). There is no separate `App::open_window` step.
 
 `close_window(&id)` removes the window from the registry and triggers its teardown. The same effect can be reached from inside the window via `window.close()` — both routes go through the Tao user-event channel and end at the same registry-removal path.
 
@@ -158,7 +145,7 @@ impl App {
 pub struct Window { /* Arc-shared inner state */ }
 
 impl Window {
-    pub fn builder<C, V>(id: impl Into<WindowId>, component: C) -> WindowBuilder
+    pub fn builder<C, V>(app: &App, id: impl Into<WindowId>, component: C) -> WindowBuilder
     where C: FnOnce() -> V + 'static, V: IntoView;
 
     // Identity
@@ -188,13 +175,13 @@ impl Window {
 
 `window.close()` posts a `UserEvent::WindowClose(id)` to the Tao loop, which removes the entry from `App`'s registry and tears down the backend, the root `Owner`, and the Tao window in that order. Calling `close` on an already-closed `Window` is a no-op.
 
-`WindowBuilder` configures a window before it is opened:
+`WindowBuilder` is bound to an `App` and finalized by a fallible `build`. This mirrors `tauri::WebviewWindowBuilder`: configure fluently, then call `build` to synchronously create the Tao window, attach the active backend, mount the component, and register the window with the runtime.
 
 ```rust
 pub struct WindowBuilder { /* ... */ }
 
 impl WindowBuilder {
-    pub fn new<C, V>(id: impl Into<WindowId>, component: C) -> Self
+    pub fn new<C, V>(app: &App, id: impl Into<WindowId>, component: C) -> Self
     where C: FnOnce() -> V + 'static, V: IntoView;
 
     pub fn title(self, title: impl Into<String>) -> Self;
@@ -214,12 +201,11 @@ impl WindowBuilder {
     pub fn stylesheet(self, css: impl Into<String>) -> Self;
     pub fn on_close(self, handler: impl FnMut(&Window) -> CloseAction + 'static) -> Self;
 
-    pub fn build(self) -> Window;
-    pub fn try_build(self) -> Result<Window, WindowError>;
+    pub fn build(self) -> leptos_native::Result<Window>;
 }
 ```
 
-`WindowBuilder::new(id, component)` and `Window::builder(id, component)` are aliases. `build` panics on misconfiguration; `try_build` returns the error. The returned `Window` is configured but not opened — calling `App::open_window(window)` registers it with the runtime, which performs the Tao + backend bring-up on the first event-loop tick.
+`WindowBuilder::new(app, id, component)` and `Window::builder(app, id, component)` are aliases. `build` returns a live `Window` already registered with the runtime, or `leptos_native::Error` if any step of bring-up failed. Errors surface synchronously at the call site — there is no asynchronous open phase. See [../errors.md](../errors.md) for the unified error model.
 
 The full `Window` lifecycle is documented in [windowing.md](windowing.md).
 
@@ -254,12 +240,11 @@ The `backend` module is the only place feature-gated `cfg` lives in this crate. 
    - Builds the Tao `EventLoop` and stores its proxy.
    - Calls `executor::init_for_tao(proxy)` (delegates to `any_spawner::Executor::init_custom`).
    - Registers the static `tray-icon` event handlers, forwarding to user events.
-   - Calls the user `setup` closure with an `App` handle.
-   - Opens every registered window: builds the Tao `Window`, attaches the active backend, mounts the user component, mounts the view tree.
+   - Calls the user `setup` closure with an `App` handle. Inside `setup`, each `WindowBuilder::build` synchronously creates the Tao window, attaches the active backend, mounts the user component, mounts the view tree, and registers the window with `App`.
    - Builds the tray if one was set.
    - Enters the Tao loop.
 2. While running, the loop dispatches Tao events, user events (tray, menu, IPC events from the WebView backend, executor wakeups), reactive polls, and per-tick mutation flush + redraw scheduling.
-3. On `App::quit` or last-window-close-with-default-policy, owners drop, backends detach, the runtime shuts down, the loop exits.
+3. On `App::quit` or last-window-close-with-default-policy, the `on_exit` handler runs, owners drop, backends detach, the runtime shuts down, the loop exits.
 
 ## Why a Single Umbrella
 
