@@ -114,7 +114,13 @@ Numeric IDs are `u64`. Strings are owned at the boundary; `webview-dom` can pass
 
 ## Versioning
 
-`Control::Ready { version }` lets `webview-dom` reject a JS shell that does not match. The CLI bundles the shell and stamps a version into the binary. Mismatch fails window startup with a clear error.
+`Control::Ready { version }` lets `webview-dom` reject a JS shell that does not match. `version` is a SemVer string identifying the interpreter contract — bumped according to these rules:
+
+- **Major** bump: a breaking protocol change (a `Mutation` or `EventPayload` variant changes shape, or the interpreter requires Rust-side cooperation that older versions do not provide). Mismatched major fails window startup.
+- **Minor** bump: a new variant added at either end. Mismatched minor logs a warning and continues — the side that doesn't recognize the variant ignores it.
+- **Patch** bump: bug fixes, performance work, no protocol shape change.
+
+The CLI bundles the JS shell at build time and stamps the matching version into `webview-dom` as a `&'static str` constant, so the comparison is compile-time-known on the Rust side.
 
 ## What This Protocol Does Not Cover
 

@@ -63,6 +63,41 @@ pub enum PredefinedMenuItem {
 
 `MenuId(String)` is user-supplied and stable. `Accelerator` describes a keyboard shortcut.
 
+### Supporting types
+
+```rust
+/// Stable identifier for a menu item, supplied by the application.
+/// Used to refer to a specific item from `MenuEvent` and from reactive bindings.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct MenuId(pub String);
+
+/// Tray click event payload. Forwarded from `tray_icon::TrayIconEvent`.
+pub enum TrayClick {
+    /// Single primary-button click on the tray icon itself.
+    Left,
+    /// Single secondary-button click — typically opens the menu on Windows/Linux.
+    Right,
+    /// Double primary-button click.
+    DoubleLeft,
+}
+
+/// Keyboard accelerator, modeled on `tray_icon::menu::Accelerator`.
+///
+/// Created via the `accelerator!` macro re-exported by `leptos-native`,
+/// which accepts e.g. `accelerator!("CmdOrCtrl+Shift+P")`.
+pub struct Accelerator { /* ... */ }
+
+/// Icon source. Constructed from a path, raw RGBA bytes, or platform-native handle.
+pub struct Icon { /* ... */ }
+
+impl Icon {
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, IconError>;
+    pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, IconError>;
+}
+```
+
+`Accelerator` and `Icon` are thin wrappers over `tray_icon`'s equivalents — they exist on the framework side so that user code does not depend on `tray-icon`'s concrete types directly. Their internals are not stable; treat them as opaque.
+
 A tray is registered with `App::set_tray(tray)` during setup. Most apps need at most one tray.
 
 ## Reactive Menu State
@@ -110,7 +145,7 @@ A tray-only app is supported: `App::set_tray` is called in `setup`; no windows a
 ## Platform Notes
 
 - Windows: tray icons appear in the notification area. Menus respond to right-click.
-- macOS: `tray-icon` integrates with the menu bar. Apps that want the dock icon hidden configure that through `AppConfig`.
+- macOS: `tray-icon` integrates with the menu bar. Hiding the dock icon is an `Info.plist` (`LSUIElement`) concern, set at bundle time by `crates/cli`, not a runtime API.
 - Linux: `tray-icon` requires `libayatana-appindicator` or the legacy `libappindicator`. The CLI scaffold flags the runtime dependency.
 
 ## What This Layer Does Not Cover

@@ -71,6 +71,20 @@ Closing the last window does not implicitly exit the application unless configur
 
 Existing `Window` clones held outside the registry stay valid in shape (the `Arc` is still alive), but operations on them become no-ops once the registry has dropped its entry. `window.is_closed()` reports the current state.
 
+### Operations on a not-yet-opened `Window`
+
+A `Window` returned by `WindowBuilder::build` but not yet handed to `App::open_window` is in the *configured* state. The runtime has not seen it; no Tao window exists.
+
+- **Mutators** (`set_title`, `set_inner_size`, `set_position`, `show`, `hide`, `focus`, `minimize`, `maximize`) are queued and replayed when `open_window` runs the bring-up. This lets setup code touch the same `Window` value before and after registration without branching.
+- **`close`** on a not-yet-opened window cancels the queued bring-up; calling `open_window` afterward is a no-op.
+- **Synchronous getters** cannot replay. Their behavior is fixed:
+  - `is_visible` returns the configured `visible` flag from the builder (default `true`).
+  - `is_focused` returns `false`.
+  - `is_closed` returns `false` until `close` is called or the runtime tears the window down.
+  - `inner_size` returns the configured `inner_size` from the builder.
+
+These rules are deterministic — no panics, no surprises. Setup code can read geometry it just configured, and tray/menu handlers that touch a window during startup do not need to check "is this open yet".
+
 ## Programmatic Window Operations
 
 Per-window operations live on `Window` itself:
@@ -138,12 +152,33 @@ The user does not see this difference. Both arrive as a `Window` with the same A
 
 `WindowError` lists failure modes:
 
-- `BackendInit(String)` — Wry or Blitz failed to attach to the Tao window.
+- `BackendInit(String)` — Wry or Blitz failed to attach to the Tao window. Reachable only after `App::open_window` (the actual attach happens on the next event-loop tick), so this never returns from `WindowBuilder::build`.
 - `MissingComponent` — builder built without a component (only reachable through `try_build` on a manually mutated builder).
-- `InvalidGeometry` — min > max, etc.
-- `Os(String)` — underlying OS error from Tao.
+- `InvalidGeometry` — min > max, etc. Caught at `build`/`try_build` time.
+- `Os(String)` — underlying OS error from Tao when creating the native window.
 
-`build` panics on misconfiguration. `try_build` returns the error.
+`build` panics on `MissingComponent` or `InvalidGeometry`. `try_build` returns the same as `Result`.
+
+### Async errors from `open_window`
+
+`App::open_window` does not return a `Result` because backend bring-up runs on the event loop, not synchronously on the caller's thread. Failures surface as `AppEvent::WindowOpenFailed(WindowId, WindowError)` through `Application::run_with`:
+
+```rust
+Application::default()
+    .setup(|app| {
+        let main = WindowBuilder::new("main", App).build();
+        app.open_window(main);
+    })
+    .run_with(|app, event| match event {
+        AppEvent::WindowOpenFailed(id, err) => {
+            tracing::error!(?id, ?err, "window failed to open");
+            // surface in UI, retry, or quit
+        }
+        _ => {}
+    });
+```
+
+`run` (the simpler entry) logs `WindowOpenFailed` at error level and otherwise ignores it. Apps that need to react use `run_with`.
 
 ## Why Window-Is-Handle
 

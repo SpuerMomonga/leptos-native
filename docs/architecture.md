@@ -118,3 +118,15 @@ reactive_graph (upstream)  ─┐
 - Implement a virtual DOM. Mutations are pushed directly through the renderer trait, driven by fine-grained reactivity.
 - Abstract the Tao/Wry/Blitz/Tokio stack behind generic platform names. Names stay plain.
 - Provide cross-platform mobile support. Scope is desktop (Windows, macOS, Linux).
+
+## Tracked As Future Work (Not Yet Designed)
+
+These are real concerns the framework will need answers for, but they are not in scope for the v0 design:
+
+- **Accessibility (a11y)**. `webview-dom` inherits the system WebView's accessibility tree for free; `blitz-dom` currently has no a11y story. Closing this gap means integrating `accesskit` (or equivalent) at the Blitz layer. Apps that ship today on `blitz-dom` will not be screen-reader compatible.
+- **Input Method Editors (IME)**. Same shape: the WebView handles CJK / Korean / complex script input out of the box; Blitz needs explicit Tao IME-event plumbing into Parley. Deferred.
+- **HiDPI / scaling**. `webview-dom` follows the system. `blitz-dom` needs explicit scale-factor propagation from Tao to the wgpu surface and the Blitz viewport. Will be addressed alongside multi-monitor support.
+- **Hot reload**. `view!` macro output is structured to allow a future hot-reload plugin (à la `leptos_hot_reload` / `dioxus-hot-reload`), but no work is done up front.
+- **Single-instance lock**. The `Application::id` is the future key; the lock itself is not implemented yet.
+
+These are listed here so that no one assumes "the framework supports X" by reading the architecture and finding silence on the topic. If you build an app that needs any of them, treat the corresponding backend as not-yet-suitable.

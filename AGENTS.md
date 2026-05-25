@@ -17,6 +17,7 @@
 - Reuse upstream Leptos crates (`reactive_graph`, `any_spawner`, optional `reactive_stores`) directly. Do not wrap them in re-export shells.
 - Do not depend on upstream `tachys`, `leptos_dom`, or `leptos_macro` — they hardcode the DOM renderer. Use `crates/render` and `crates/view-macro` instead.
 - Add a new crate only when the responsibility is stable and cannot stay as a module inside an existing crate.
+- Every dependency a sub-crate uses must first be declared in the root `Cargo.toml` under `[workspace.dependencies]` (with version, features, and any other settings centralized there), and then pulled into the sub-crate's `Cargo.toml` via `dep = { workspace = true }`. Do not put concrete version numbers or feature lists in sub-crate `Cargo.toml` files. This keeps versions consistent across the workspace and makes upgrades a single-file edit.
 
 ## Rust Style
 

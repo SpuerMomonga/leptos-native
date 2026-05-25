@@ -109,6 +109,29 @@ Backends differ on:
 
 The framework's portable code path is the intersection. Stick to it for cross-backend components; reach for backend-specific features only inside backend-specific modules.
 
+## Styling Model
+
+Both backends apply CSS to elements via the `class` and `style` attributes — the same mental model the `view!` macro already uses. The framework does not invent a CSS-in-Rust DSL; CSS authoring stays in plain `.css` files.
+
+There are three intended sources of styles:
+
+1. **Global stylesheets** — pass to `WindowBuilder::stylesheet(css)` (one string per window). Both backends inject the string at window startup: `webview-dom` adds a `<style>` to the HTML shell; `blitz-dom` parses it into the document's stylesheet list. Suitable for resets, tokens, and shared theme rules.
+2. **Per-component stylesheets via the asset pipeline** — the recommended approach for component-scoped CSS. The CLI's asset pipeline (see [cli/README.md](cli/README.md)) bundles `assets/styles/*.css` into the binary; components reference them by class name. The pipeline supports a single concatenated stylesheet today; CSS-modules-style scoping is future work.
+3. **Inline styles** — `style="color: red"` works in both backends for quick one-offs.
+
+There is no styled-components / emotion / CSS-in-Rust integration in the public API. Apps that want one can build it on top of `class` and `style` attributes; the framework does not bless a specific library.
+
+### What backends accept
+
+- `webview-dom`: full CSS spec — whatever the system WebView supports (WebView2 / WKWebView / WebKitGTK).
+- `blitz-dom`: the CSS subset Blitz currently implements. Tracked alongside Blitz upstream. Selectors, layout, fonts, colors, borders, and most flexbox work; pseudo-classes and animations are partial. Apps targeting both backends should stay close to the intersection.
+
+The framework documents the supported subset by linking to Blitz's own status page rather than maintaining a parallel list.
+
+### Why not CSS-in-Rust
+
+A typed CSS-in-Rust API would mean either (a) reimplementing CSS parsing and validation, or (b) wrapping a string concatenator with type-safe helpers — neither of which adds value over `class="foo"` plus a stylesheet. The CSS specification is the API; existing CSS tooling (linters, formatters, editor plugins) just works on `.css` files. Resisting the temptation to invent a new layer keeps the framework narrower.
+
 ## Future Backends
 
 A third backend implements `crates/render::Renderer` and slots in next to the existing two as a new crate (`skia-dom`, `tui-dom`, etc.) plus a feature on `leptos-native`. The `Renderer` trait is the only contract.

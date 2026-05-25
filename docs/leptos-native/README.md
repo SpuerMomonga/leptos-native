@@ -38,7 +38,15 @@ webview = ["dep:leptos-native-webview-dom"]
 blitz   = ["dep:leptos-native-blitz-dom"]
 ```
 
-`webview` and `blitz` are **mutually exclusive**. Building with both enabled fails at compile time with a clear `compile_error!`.
+`webview` and `blitz` are **mutually exclusive**. Building with both enabled fails at compile time with a clear `compile_error!`. Building with **neither** enabled also fails with a clear `compile_error!` — there is no headless default. Pick one explicitly:
+
+```toml
+# pick one
+leptos-native = { version = "0.1", features = ["webview"] }
+leptos-native = { version = "0.1", default-features = false, features = ["blitz"] }
+```
+
+When the `default-features = false` form is used to switch off `webview`, the `blitz` feature must be added in the same line.
 
 ## Public API
 
@@ -70,16 +78,41 @@ impl Application {
     pub fn name(self, name: impl Into<String>) -> Self;
     pub fn version(self, version: impl Into<String>) -> Self;
     pub fn id(self, identifier: impl Into<String>) -> Self;
-    pub fn config(self, config: AppConfig) -> Self;
 
     pub fn setup<F>(self, setup: F) -> Self where F: FnOnce(&App) + 'static;
 
     pub fn run(self);
     pub fn run_with(self, on_event: impl FnMut(&App, AppEvent) + 'static);
 }
+
+/// Application-level events surfaced to `run_with`.
+pub enum AppEvent {
+    /// The Tao loop has started; setup is complete and windows are open.
+    Started,
+    /// A window finished bring-up successfully.
+    WindowOpened(WindowId),
+    /// A window's bring-up failed (GPU adapter missing, system WebView not installed,
+    /// HTML shell rejected by Blitz, etc). Surfaces backend errors that cannot be
+    /// returned synchronously from `App::open_window`.
+    WindowOpenFailed(WindowId, WindowError),
+    /// A window finished tearing down. Fires after `on_close` and registry removal.
+    WindowClosed(WindowId),
+    /// The loop is about to exit. Last chance for synchronous cleanup before drop.
+    WillExit,
+}
 ```
 
 `Application::default()` produces a working app with sensible defaults: a Tao loop, a multi-thread Tokio runtime, the Tao-aware executor.
+
+`name` and `version` are optional. When unset, they fall back to the consuming crate's `CARGO_PKG_NAME` and `CARGO_PKG_VERSION` (read at compile time via `env!`), so a typical app never needs to call them. Override only when the displayed app name should differ from the Cargo package name (e.g., `"my_app_bin"` → `"My App"`) or when the runtime version should not track Cargo's.
+
+`id` has no default and must be set explicitly. It is the reverse-DNS application identifier (e.g., `"com.example.counter"`) used by platform APIs that need a stable, globally-unique handle:
+
+- Windows: `SetCurrentProcessExplicitAppUserModelID`, which controls taskbar grouping, jump lists, and toast notification attribution. Must be called before the first window is shown.
+- Linux: D-Bus object path segment for `libayatana-appindicator` tray integration.
+- Single-instance lock key (named mutex on Windows, abstract socket on Linux), if/when single-instance support is added.
+
+These cannot be derived from `CARGO_PKG_*` because the Cargo package name is not reverse-DNS-formatted and there is no way to encode an organization domain there. Forcing `id` keeps platform integration correct.
 
 ### `App`
 
